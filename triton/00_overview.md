@@ -20,8 +20,10 @@
 Dynamo 抓图 → Inductor 在图上做融合决策、切出 kernel 边界 → 每个 kernel 边界生成一份 Triton 源码 → Triton 编译器把它编译成 PTX/cubin；AOTInductor 则是把这整条链路挪到部署前离线跑一次，产出不依赖 Python 的可执行产物，是 TorchScript 之后新的部署路线。
 
   CUDA C++ → PTX → cubin 这条路你已经走过；Triton 的编译流程最后也落到这两级（Triton IR → LLVM IR → PTX → cubin），区别是你能在 Triton 里主动 dump 出中间产物看，第 3章会演示），而 TensorRT engine 内部生成的 kernel 是黑盒，你只能 profiling，看不到源码级的东西。
-  - PTX：NVIDIA GPU 的虚拟指令集（类似 CPU 世界的 LLVM IR），是架构无关的中间表示，人可读。
+  - PTX（Parallel Thread Execution）：NVIDIA GPU 的虚拟指令集（类似 CPU 世界的 LLVM IR），是架构无关的中间表示，NVIDIA GPU 世界里的中间层。
   - cubin：PTX 被 ptxas 进一步编译成的、绑定具体 GPU 架构（sm_XX）的二进制机器码，GPU 实际执行的是这个。
+  - LLVM 是整个编译器框架，（早期一般说 LLVM = Low Level Virtual Machine，但后来项目范围变大，这个名字已经不准确，所以官方现在把 LLVM 当作正式名称本身，不再强行展开。）
+  - LLVM IR 是这个框架里最常被提到的那种中间表示，CPU/通用编译器世界里的中间层
 
   块级（block-level）DSL 怎么理解
   - CUDA C++ 是线程级编程模型：你写的 kernel body 描述单个线程做什么，threadIdx/blockIdx 要自己算索引，跨线程通信（shared memory、reduction）要自己手写同步。
@@ -32,7 +34,7 @@ Dynamo 抓图 → Inductor 在图上做融合决策、切出 kernel 边界 → �
   - 它挂一个 frame evaluation hook，在函数真正执行前拦截 Python 字节码，尝试把里面的 tensor 操作转成一张 FX Graph。
   - 遇到它无法安全转换的 Python 结构（任意的第三方库调用、复杂控制流、print 之类的副作用等），它就在那里切一刀——graph 
     break：这段之前捕获的代码变成一张编译好的图，中间这一小段退回 CPython eager 执行，之后再继续尝试捕获下一段。
-  - 为了保证正确性（不像 trace 会静默出错），Dynamo 会生成 guard（对输入 shape/dtype/某些 Python 值的假设条件），下次调用先检查 guard
+  - *为了保证正确性（不像 trace 会静默出错），Dynamo 会生成 guard（对输入 shape/dtype/某些 Python 值的假设条件），下次调用先检查 guard*
     是否仍然成立，不成立就重新触发编译——这就是文档里"按 shape/dtype 特化，带缓存"的机制来源。
 
   Inductor 自动算子融合 / 决定 kernel 边界，怎么理解

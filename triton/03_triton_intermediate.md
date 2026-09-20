@@ -110,6 +110,45 @@ shape 的特化等）。这里的重点是理解 `tl.dot` + autotune 的编程�
 完整代码见 [`code/03_fused_layernorm.py`](code/03_fused_layernorm.py)。这是本章最能体现
 "为什么要手写 Triton kernel"的例子。
 
+### LayerNorm 的数学原理
+
+LayerNorm 对输入的最后一维（也就是这里的"一行"，长度 `n_cols`）做归一化，让这一行的均值变 0、
+方差变 1，再用可学习的 `weight`/`bias` 做一次仿射变换还原表达能力。对一行输入 $x = (x_1, \dots, x_n)$：
+
+$$
+\mu = \frac{1}{n}\sum_{i=1}^{n} x_i
+\qquad\qquad
+\sigma^2 = \frac{1}{n}\sum_{i=1}^{n} (x_i - \mu)^2
+$$
+
+$$
+\hat{x}_i = \frac{x_i - \mu}{\sqrt{\sigma^2 + \epsilon}}
+\qquad\qquad
+y_i = \hat{x}_i \cdot \gamma_i + \beta_i
+$$
+
+- $\mu$、$\sigma^2$：这一行自己的均值和方差（**逐行**统计，不像 BatchNorm 是跨样本统计——
+  这也是为什么 LayerNorm 天然适合"一个 program 处理一行"这种并行方式，各行互不依赖）。
+- $\epsilon$：防止 $\sigma^2 = 0$ 时除零的小常数（kernel 参数里的 `eps`）。
+- $\gamma$（`weight`）、$\beta$（`bias`）：可学习参数，长度都是 `n_cols`，让网络在"归一化"之外
+  还能自己学出每一列合适的缩放和偏移，避免归一化把有用的尺度信息完全抹掉。
+
+对照 kernel 代码，四行数学公式和五行 Triton 代码是逐句对应的：
+
+```python
+mean = tl.sum(x, axis=0) / n_cols              # μ = (1/n) Σ xᵢ
+diff = tl.where(mask, x - mean, 0.0)            # xᵢ - μ
+var = tl.sum(diff * diff, axis=0) / n_cols      # σ² = (1/n) Σ (xᵢ - μ)²
+inv_std = 1.0 / tl.sqrt(var + eps)              # 1 / sqrt(σ² + ε)
+x_norm = diff * inv_std                         # x̂ᵢ = (xᵢ - μ) / sqrt(σ² + ε)
+...
+y = x_norm * weight + bias                      # yᵢ = x̂ᵢ · γᵢ + βᵢ
+```
+
+注意 $\mu$ 和 $\sigma^2$ 是两次**独立的归约**（先算完 $\mu$，才能算 $\sigma^2$ 里的 $x_i - \mu$），
+这也是 naive 版本至少需要两次"读整行数据"的数学原因——融合版之所以能只读一次，是因为 `x` 在
+load 完之后就作为向量留在寄存器里，两次归约都在同一份寄存器数据上反复算，不需要重新访存。
+
 Naive LayerNorm（用 PyTorch 逐步写）会产生多个独立 kernel：算 mean、算 var、减均值除标准差、
 乘 weight 加 bias——每一步都是一次完整的"从显存读、算、写回显存"往返。融合成一个 kernel 后，
 数据只读一次、写一次：
