@@ -1,0 +1,4 @@
+data
+artifacts
+code/__pycache__
+*pyc
