@@ -63,7 +63,7 @@ nvidia-modelopt: 0.47.0   (第 8 章量化用)
 | [01 环境搭建](01_setup.md) | 各路线依赖矩阵；装 torch-tensorrt 的四个坑；**"误差 0.0 其实什么都没转"陷阱** | 25 分钟 |
 | [02 基准与模型设计](02_baseline_and_models.md) | benchmark 的四种骗法（含我真踩的）；为什么 `allclose` 不够；四个模型各证明什么 | 30 分钟 |
 | [03 ONNX → TensorRT](03_onnx_trt_route.md) | 你现在的路线：两步两类坑；opset/profile/dtype；**你得自己写的那 40 行运行时**；R2 vs R3 实测 | 40 分钟 |
-| [04 Torch-TensorRT](04_torch_tensorrt_route.md) | 六个入口的对照表；`min_block_size` 陷阱；**部分回退的能力与代价**；为什么别用 TorchScript 前端 | 45 分钟 |
+| [04 Torch-TensorRT](04_torch_tensorrt_route.md) | 六个入口的对照表；`min_block_size` 陷阱；**部分回退的能力与代价**；**`torch.library` 自定义算子 + converter**；为什么别用 TorchScript 前端 | 45 分钟 |
 | [05 控制流与回退](05_control_flow_and_fallback.md) | **全教程最重要一章**：静默出错 vs 诚实拒绝 vs graph break，三种行为实测 | 40 分钟 |
 | [06 综合对比与选型](06_benchmark_comparison.md) | 4 模型 × 7 路线完整数据；**被推翻的四个先验判断**；决策流程；适用边界 | 40 分钟 |
 | [07 附录](07_appendix.md) | TensorRT-LLM / ONNX Runtime 的定位；排查工具；坑清单；版本对齐 | 需要时查阅 |
@@ -85,6 +85,7 @@ python3 run_bench.py --models resnet18          # 单模型全路线（约 2 分
 python3 exp_control_flow.py                     # 第 5 章核心实验
 python3 exp_unsupported_op.py                   # 不支持算子实验
 bash plugins/build.sh && python3 exp_custom_plugin.py   # 第 10 章：自定义算子 + plugin
+python3 exp_r4_custom_op.py                      # 第 4 章：R4 + torch.library 自定义算子
 python3 run_bench.py                            # 全矩阵（约 15 分钟）
 python3 run_bench.py --table                    # 从已有结果重渲染表格
 ```
@@ -118,6 +119,7 @@ python3 run_bench.py --table                    # 从已有结果重渲染表格
 │   ├── exp_quant_batch.py         第 8 章：batch 扫描追加实验
 │   ├── exp_dynamic_shape.py       第 9 章：动态 shape 实验
 │   ├── exp_custom_plugin.py       第 10 章：ONNX 自定义算子 + TRT plugin
+│   ├── exp_r4_custom_op.py        第 4 章：R4 + torch.library 自定义算子 / converter
 │   └── plugins/                   第 10 章：C++ IPluginV3 源码 + build.sh
 ├── data/imagenette2-160/          第 8 章用的真实图片（约 99 MB，需下载）
 └── artifacts/                     ONNX / engine / .pt2 / results.jsonl
