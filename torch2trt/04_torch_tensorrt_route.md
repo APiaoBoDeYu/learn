@@ -161,7 +161,159 @@ resnet18 上 0.807 vs 0.852（差 5%，接近噪声），bert_tiny 上 0.296 vs 
 这也解释了 `min_block_size` 为什么重要：生产上你要用默认值 5 甚至更大，让它
 **只在有足够大的连续可转子图时才建 engine**，碎片就留给 PyTorch。
 
-## 4.5 R5：TorchScript 前端 —— 为什么本教程建议你不要用
+## 4.5 R4 + 自己写的自定义算子（`torch.library`）
+
+4.4 里的 `erfinv` 是 PyTorch 自带、只是 Torch-TensorRT 没有 converter 的 aten 算子。
+实际项目里更常见的是另一种情况：**算子是你自己写的** —— 一个融合的 CUDA kernel、一个
+Triton kernel —— 用 `torch.library` 注册进 PyTorch。R4 对这种算子同样有效，而且
+**`build_dynamo_trt` 一行不用改**。区别只在调用它之前注册了什么。
+
+`exp_r4_custom_op.py` 把 `erfinv` 包成自定义算子 `mylib::my_erfinv`，同一个模型、
+同一份权重，测三种做法。
+
+### 第一步（必做）：定义算子 + fake 实现
+
+```python
+@torch.library.custom_op("mylib::my_erfinv", mutates_args=())
+def my_erfinv(x: torch.Tensor) -> torch.Tensor:
+    return torch.erfinv(x)          # 真正的实现：CUDA / Triton / 任意 torch 代码
+
+@my_erfinv.register_fake            # torch.export 用 fake tensor 追踪，靠它推导 shape/dtype
+def _(x):
+    return torch.empty_like(x)
+
+# 模型里：x = torch.ops.mylib.my_erfinv(x)
+```
+
+`register_fake` 不能省。没有它，`torch.export` 就失败了，Torch-TensorRT 根本看不到这张图。
+
+**只做这一步，R4 就能跑**（做法 A）：Torch-TensorRT 找不到这个算子的 converter，
+就把它留在 PyTorch 里 —— 和 4.4 的部分回退完全一样。
+
+### 做法 B：C++ plugin + 手写 converter —— 把算子收进 engine
+
+converter 是 Torch-TensorRT 里"看到这个算子就往 TRT 网络里加什么层"的规则。
+加载第 10 章那个 C++ `IPluginV3` 的 `.so`，再给 **你的算子** 注册一个 converter：
+
+```python
+import ctypes, tensorrt as trt
+from torch_tensorrt.dynamo.conversion import dynamo_tensorrt_converter
+from torch_tensorrt.dynamo.conversion.converter_utils import get_trt_tensor
+
+ctypes.CDLL("artifacts/liberfinv_plugin.so")    # 加载即注册（REGISTER_TENSORRT_PLUGIN）
+
+@dynamo_tensorrt_converter(torch.ops.mylib.my_erfinv.default, supports_dynamic_shapes=True)
+def my_erfinv_converter(ctx, target, args, kwargs, name):
+    creator = trt.get_plugin_registry().get_creator("ErfInv", "1", "")
+    plugin = creator.create_plugin("ErfInv", trt.PluginFieldCollection([]),
+                                   trt.TensorRTPhase.BUILD)
+    x = get_trt_tensor(ctx, args[0], f"{name}_x")
+    layer = ctx.net.add_plugin_v3([x], [], plugin)
+    return layer.get_output(0)
+
+gm, meta = routes.build_dynamo_trt(model, inputs)   # 照常调用
+```
+
+几个要对齐的地方：
+
+- converter 的目标是 `torch.ops.<命名空间>.<算子名>.default`，即 `torch.export` 图里
+  节点的 target。
+- `get_creator` 的名字 / 版本要和 C++ 里 `getPluginName()` / `getPluginVersion()` 一致。
+- 算子如果有标量参数（比如 `alpha`），从 `args` 里取出来，打包成 `trt.PluginField`
+  放进 `PluginFieldCollection`，字段名要和 C++ 的 `getFieldNames()` 对上。
+
+### 做法 C：Triton kernel + 自动生成 plugin —— 不写 C++
+
+Torch-TensorRT 2.9 能从 `torch.library` 算子**自动生成** Python plugin（QDP）和
+converter。前提是算子的实现本身是一个 Triton kernel 的 launch：
+
+```python
+@torch.library.custom_op("mylib::my_erfinv", mutates_args=())
+def my_erfinv(x: torch.Tensor) -> torch.Tensor:
+    y = torch.empty_like(x)
+    erfinv_kernel[(triton.cdiv(x.numel(), 256),)](x, y, x.numel(), BLOCK=256)
+    return y
+# ... register_fake 同上 ...
+
+torch_tensorrt.dynamo.conversion.plugins.custom_op(
+    "mylib::my_erfinv", supports_dynamic_shapes=True)   # 一行：plugin + converter
+```
+
+### 实测
+
+`customop` 模型（fc1 → clamp → my_erfinv → fc2），fp16，Thor，中位延迟：
+
+| 做法 | 要写什么 | 子图 TRT / 回退 | b=32 | b=8192 | 能导出 `.plan` |
+|---|---|---|---|---|---|
+| A. 只定义算子（部分回退） | `custom_op` + `register_fake` | 2 / 1 | 0.228 ms | 0.362 ms | 否 |
+| **B. C++ plugin + converter** | + 120 行 C++ + 10 行 converter | **1 / 0** | **0.114–0.121 ms** | **0.225 ms** | **是** |
+| C. Triton + 自动生成 QDP plugin | + Triton kernel + 1 行 | 1 / 0 | 0.56–0.69 ms | 0.910 ms | 是（但运行时要 Python） |
+| D. Triton + 手写 QDP AOT plugin | + Triton kernel + `trtp.register` / `aot_impl` + converter | 1 / 0 | 见下文 | — | 是，纯 TRT 可运行 |
+
+三种做法数值都正确（cos 0.999998，`top1_agree=1.000`）。
+
+- **B 比部分回退快 1 倍左右**，和第 10 章用 `aten.erfinv` 测的结果（0.201 → 0.118 ms）
+  一致。所以算子是 aten 自带的还是你自己写的，对 converter 机制没有区别。
+- **C 虽然 0 回退，却比 A 还慢 2.5 倍。** 它底层就是第 10 章测过的 QDP：在
+  TRT 10.14 上每次推理都重新加载一次 PTX 模块，固定开销 0.15 ms 以上，和数据量无关。
+  "子图数少"不等于"快"。C 适合验证接口和数值，不要用在热路径上。
+- **只有全部算子都转进 TRT（B / C），才能导出独立的 engine。**
+  `convert_exported_program_to_serialized_trt_engine` 遇到没有 converter 的算子不会回退，
+  直接失败（报错是一个莫名其妙的 `UnboundLocalError: interpreter_result`）。B 导出的
+  `.plan` 是 0.65 MB，用纯 TensorRT 加载、推理，结果正确。部署时**先加载 `.so` 再反序列化**，
+  否则报 `IPluginCreatorInterface not found`（附录 07）。
+- **C 导出的 `.plan` 不能独立部署。** 换一个新进程用纯 TensorRT 加载，可以反序列化，
+  但创建执行上下文时报 `Cannot find plugin: my_erfinvmylib`。原因是自动生成的只是 JIT
+  插件：`.plan` 里只记录插件名，执行时由 TRT 回调 Python 函数，再调用
+  `torch.ops.mylib.my_erfinv` 启动 Triton kernel。
+
+### 做法 D：手写 QDP AOT —— 把 Triton kernel 嵌进 engine
+
+`plugins.custom_op` 不会生成 AOT 实现，要自己用 `tensorrt.plugin` 写：`trtp.register`
+声明输出形状，`trtp.aot_impl` 在构建 engine 时用 Triton 把 kernel 编译成 PTX，并返回
+PTX 和启动参数；converter 里用 `ctx.net.add_plugin(trtp.op.<ns>.<name>(x), aot=True)`。
+这时 PTX 会被写进 `.plan`，推理时不需要 Python、Triton，也不需要 `.so`。实验代码不在本仓库，
+放在 `/tmp/aot/`。
+
+实测（b=32，纯 TRT `execute_async_v3` 的中位延迟）：
+
+| | 新进程纯 TRT 运行 | 纯 TRT 执行耗时 |
+|---|---|---|
+| B. C++ plugin | 成功（先加载 `.so`） | **0.029 ms** |
+| D. QDP AOT（PTX） | 成功，cos 0.999998 | 0.214 ms |
+| D'. QDP AOT 改为返回 cubin | 失败：`onShapeChange status -1`，输出 nan | — |
+
+踩过的坑：
+
+- Triton 3.5 编译出的 kernel 会在参数末尾多加两个 scratch 指针，TRT 只传 `x, n, y`，
+  参数个数对不上，启动就段错误。本例的 scratch 大小为 0，可以把这两个参数从 PTX 里删掉
+  （这是针对当前版本的变通做法）。
+- Triton kernel 里不能用 Python 列表写 `for c in [...]` 循环，否则编译失败。
+- `aot_impl` 目前只接受 PTX。无论是 Triton 直接生成的 cubin，还是用 `ptxas` 编译出的 cubin，
+  构建都能通过，但推理时都会失败。
+- **慢的原因**：用 `nsys` 统计，D 每推理一次就调用一次 `cuModuleLoadData`，把 PTX 模块
+  重新加载一遍（推理 220 次，调用 223 次；B 全程只调用 3 次）。关掉驱动的 JIT 缓存
+  （`CUDA_CACHE_DISABLE=1`）后，每次推理要 10～16 ms，说明每次加载都要重新 JIT 编译 PTX。
+
+### 怎么选
+
+**结论：R4（torch.export → Torch-TensorRT dynamo_trt）遇到不支持的算子时，最优做法是
+写 C++ plugin + converter（做法 B）。** 实测四种做法中只有它同时做到了：最快、
+整张图进 engine、导出的 `.plan` 能脱离 Python 用纯 TensorRT 部署，而且同一个 `.so`
+还能给 ONNX 路线用。C 运行时离不开 Python；D 虽然能独立部署，但在 TRT 10.14 上
+每次推理都要重新加载 PTX，比 B 慢约 7 倍。
+
+```
+1. 定义 custom_op + register_fake，用 R4 跑通      零额外成本，部分回退
+   └─ profile 证明回退子图是瓶颈 / 需要脱离 Python ↓
+2. 写 C++ IPluginV3 + converter                   最优：最快，可导出 .plan，.so 同时能给 ONNX 路线用
+（做法 C 只用来快速验证接口和数值；做法 D 能脱离 Python，但 TRT 10.14 上每次推理都重新加载 PTX，别上热路径）
+```
+
+这也补全了 4.4 的结论：**部分回退和 plugin 不是二选一**。部分回退让你先拿到一个
+能用的产物，plugin 是确认瓶颈之后再把回退的那段收回 engine。
+
+## 4.6 R5：TorchScript 前端 —— 为什么本教程建议你不要用
 
 R5 走 `torch.jit.trace` → `torch_tensorrt.ts.compile`。它是 Torch-TensorRT 的
 老路线，官方已把 `ts` / `fx` / `ptq` 标为 **maintenance mode**。
@@ -249,12 +401,14 @@ except Exception as e:
 如果你有存量 TorchScript 代码在跑 R5 并且工作正常，没必要为了迁移而迁移；
 但不要用它开新项目。
 
-## 4.6 R4 的优缺点总结
+## 4.7 R4 的优缺点总结
 
 优点：
 
 - **部分回退**：不支持的算子不会让整条路线断掉，而且**零工程成本**。ONNX 路线要花成本
   写自定义算子 / plugin 才能做到（第 10 章）。
+- **自定义算子是一等公民**：`torch.library` 算子 + `register_fake` 就能跑；
+  再注册一个 converter 就能把它收进 engine，甚至导出 `.plan`（4.5）。
 - **少一次 IR 转换**：没有 opset 版本这个约束维度，PyTorch 语义直接保真。
 - **`torch.export` 的严格性**：控制流转不了就报错，不静默出错（第 5 章）。
 - **返回的就是 torch Module**：不用自己写那 40 行运行时代码。
@@ -269,12 +423,13 @@ except Exception as e:
 - **部分回退可能比 eager 慢**（`customop` 的 0.34x）。**能跑不等于该用。**
 - **性能上并不比 ONNX 路线更快**（实测 5% 以内）。
 
-## 4.7 动手
+## 4.8 动手
 
 ```bash
 cd /root/data/learn/torch2trt/code
 python3 run_bench.py --models resnet18,bert_tiny,customop --routes dynamo_trt,ts_trt
 python3 exp_unsupported_op.py
+bash plugins/build.sh && python3 exp_r4_custom_op.py   # 4.5：R4 + torch.library 自定义算子
 ```
 
 建议自己改 `min_block_size` 跑一遍 `customop`，观察子图计数和延迟怎么变：

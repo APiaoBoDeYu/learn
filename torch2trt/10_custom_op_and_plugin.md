@@ -348,8 +348,9 @@ def erfinv_converter(ctx, target, args, kwargs, name):
 路线共用的资产**，`.so` 写一次两边都能用。
 
 （Torch-TensorRT 2.9 还有 `torch_tensorrt.dynamo.conversion.plugins.custom_op`，
-能从 `torch.library` 自定义算子自动生成 QDP plugin 和 converter。本教程没测；
-它底层是 10.3 那套 QDP，所以 10.5 测到的 AOT 开销大概率同样适用。）
+能从 `torch.library` 自定义算子自动生成 QDP plugin 和 converter。第 4 章 4.5 实测了：
+0 回退，但 b=32 下 0.56–0.69 ms，比部分回退还慢 —— 10.5 测到的 QDP 开销同样适用。
+那一节也给出了用户自定义算子（而不是 aten 算子）接这个 C++ plugin 的完整写法。）
 
 ## 10.6 修正后的对比：遇到不支持的算子
 

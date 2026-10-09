@@ -310,7 +310,9 @@ def build_dynamo_trt(model, inputs, fp16: bool = True, min_block_size: int = 1,
                 p.data = p.data.to(want)
 
     def do_build():
+        # PyTorch 模型 → 计算图
         ep = torch.export.export(model, inputs, dynamic_shapes=dynamic_shapes)
+        # 计算图 → 内嵌 TRT 引擎的模型
         return tt.dynamo.compile(
             ep, inputs=list(inputs),
             enabled_precisions=precisions,

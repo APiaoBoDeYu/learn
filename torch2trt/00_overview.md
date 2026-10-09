@@ -101,7 +101,7 @@ Torch-TensorRT 会把图切开，能转的转、不能转的留在 PyTorch。第
 
 **类比 1：ONNX 之于 TensorRT，就像 C 之于汇编器。**
 ONNX 是一个通用中间格式，好处是任何前端都能产出它、任何后端都能消费它；代价是它有
-自己的算子集，PyTorch 的语义要先翻译成 ONNX 算子，翻译不过去的就丢了。
+自己的算子集，PyTorch 的语义要先翻译成 ONNX 算子，翻译不过去的就丢了(或者你自定义onnx算子)。
 `torch.export` 走的是另一条思路：不翻译，直接把 PyTorch 自己的 ATen 图交给后端。
 **少一次翻译，就少一类 bug。**
 
