@@ -70,6 +70,7 @@ nvidia-modelopt: 0.47.0   (第 8 章量化用)
 | [08 量化](08_quantization.md) | INT8 / FP8 三种机制；**真实 top-1 精度损失**；为什么 INT8 要大 batch 才有收益；量化工具自己踩了第 5 章的坑 | 45 分钟 |
 | [09 动态 shape](09_dynamic_shapes.md) | 三种声明方式对比；**动态 engine 比静态慢 44–84%**；动态下 dynamo_trt 反超 ONNX；一个污染全局的真 bug | 40 分钟 |
 | [10 自定义算子与 plugin](10_custom_op_and_plugin.md) | ONNX 的两个逃生口：自定义算子 / 分解 + TRT plugin（C++ / Python）；**plugin 是融合屏障**；同一个 `.so` 也能救 dynamo_trt | 45 分钟 |
+| [11 执行原理对比](11_compile_vs_trt_internals.md) | torch.compile 与 TensorRT 的编译流程；**GPU 上最终跑的是谁的 kernel**；CPU 端调度开销 | 20 分钟 |
 
 建议按顺序读。第 2 章的方法论是后面所有数据可信的前提；第 5、6 章的结论依赖前面所有章节。
 
@@ -83,7 +84,8 @@ python3 models.py          # 确认四个模型都能前向
 
 python3 run_bench.py --models resnet18          # 单模型全路线（约 2 分钟）
 python3 exp_control_flow.py                     # 第 5 章核心实验
-python3 exp_unsupported_op.py                   # 不支持算子实验
+python3 exp_unsupported_op.py                   # 不支持算子实验（含自定义 ONNX 算子 + plugin）
+python3 exp_plugin_latency.py                   # 第 5 章：plugin engine 的延迟拆解
 bash plugins/build.sh && python3 exp_custom_plugin.py   # 第 10 章：自定义算子 + plugin
 python3 exp_r4_custom_op.py                      # 第 4 章：R4 + torch.library 自定义算子
 python3 run_bench.py                            # 全矩阵（约 15 分钟）
@@ -104,7 +106,7 @@ python3 run_bench.py --table                    # 从已有结果重渲染表格
 ```
 /root/data/learn/torch2trt/
 ├── README.md                          本文件
-├── 00_overview.md ~ 10_custom_op_and_plugin.md   十一个章节
+├── 00_overview.md ~ 11_compile_vs_trt_internals.md   十二个章节
 ├── context.txt                        最初的问题（教程的起点）
 ├── code/
 │   ├── common.py                  计时 / 正确性判据 / 结果落盘
@@ -113,6 +115,7 @@ python3 run_bench.py --table                    # 从已有结果重渲染表格
 │   ├── run_bench.py               benchmark 驱动 + 表格渲染
 │   ├── exp_control_flow.py        第 5 章：控制流实验
 │   ├── exp_unsupported_op.py      第 5 章：不支持算子实验
+│   ├── exp_plugin_latency.py      第 5 章：plugin engine 延迟拆解（host vs GPU）
 │   ├── data.py                    第 8 章：真实 ImageNet 数据 + top-1 评估
 │   ├── quant_routes.py            第 8 章：INT8/FP8 三种量化机制
 │   ├── exp_quantization.py        第 8 章：量化主实验

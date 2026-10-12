@@ -1,8 +1,8 @@
 # 第 10 章：ONNX 自定义算子 + TensorRT plugin —— 前面几章跳过的两个逃生口
 
-第 5 章把 `customop / onnx_trt` 记成"构建失败"就结束了，第 3、4 章也一直说
-ONNX→TRT 是"全有或全无"。**这个说法不公平。** 它只描述了"遇到第一个报错就停下"
-的情况。在生产里，ONNX 路线遇到不支持的算子时有两个标准做法，正好对应它的两步：
+第 5 章已经用"自定义 ONNX 算子 + C++ plugin"让 `customop` 的 `onnx_trt` / `trtexec`
+构建成功；第 3、4 章说的 ONNX→TRT"全有或全无"，只描述了"遇到第一个报错就停下"
+的情况。本章把这两个逃生口的所有变体展开来测。在生产里，ONNX 路线遇到不支持的算子时有两个标准做法，正好对应它的两步：
 
 ```
 nn.Module ──[torch.onnx.export]──> ONNX ──[TRT OnnxParser + Builder]──> .plan
@@ -322,8 +322,10 @@ ONNX+C++ plugin：median 0.079 ms，GPU 时间 0.022 ms。差的 0.057 ms 是 `T
 这个模型小到 Python 开销是主体。
 
 所以对这个模型要分两种情况读：
-- **Python 服务里**：TRT 路线最好也就 0.079 ms，**比 eager（0.065）还慢**，
-  AOTI（0.060）最快。第 5 章的结论不变。
+- **Python 服务里**：用 `TrtRunner` 时 TRT 路线最好也就 0.079 ms，**比 eager（0.065）还慢**。
+  但这是 runner 写法的问题：第 5 章 5.5 节拆解过，自建 stream + 每次同步 + 每次分配输出
+  占了大头；换成预分配、在当前 stream 上 enqueue 的精简 runner，同一个 `.plan` 降到
+  0.034 ms（`exp_plugin_latency.py`）。
 - **C++ 服务里**：engine 只要 0.02 ms。但这时 eager 也该换成 CUDA graph 来比
   （实测 eager + CUDA graph replay 0.015 ms），AOTI 在 C++ 里同样没有 Python 开销。
   **小模型上编译不编译差别不大，第 6 章规律 1 依然成立。**
@@ -373,7 +375,7 @@ def erfinv_converter(ctx, target, args, kwargs, name):
 | 前面的说法 | 修正 |
 |---|---|
 | 第 0/3/4 章："ONNX→TRT 全有或全无，要继续只能写 C++ plugin" | **有两个逃生口**，而且最好的那个（分解成标准算子）连 plugin 都不用写 |
-| 第 5 章："customop 上唯一能脱离 Python 的是 AOTI" | ONNX + plugin / 分解 也能脱离 Python。**但 AOTI 仍然最快**，这条不变 |
+| 第 5 章（已同步修订）："customop 上唯一能脱离 Python 的是 AOTI" | ONNX + plugin / 分解 也能脱离 Python。**但 AOTI 仍然最快**，这条不变 |
 | 第 4 章："部分回退是 R4 相对 ONNX 最实质的能力差异" | 能力差异在于**零工程成本就能跑**；ONNX 花点工程成本也能跑，而且**能跑得比部分回退快**（0.079 vs 0.201） |
 | 第 6 章决策流程："`torch.onnx.export` 不能过 → dynamo_trt" | 中间该插一步：**先看能不能在导出期分解成标准算子** |
 

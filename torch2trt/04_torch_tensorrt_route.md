@@ -192,8 +192,37 @@ def _(x):
 
 ### 做法 B：C++ plugin + 手写 converter —— 把算子收进 engine
 
-converter 是 Torch-TensorRT 里"看到这个算子就往 TRT 网络里加什么层"的规则。
-加载第 10 章那个 C++ `IPluginV3` 的 `.so`，再给 **你的算子** 注册一个 converter：
+#### converter 是什么
+
+**converter 是一个“翻译函数”：Torch-TensorRT 构建 engine 时，用它把 PyTorch 计算图里的
+某个算子节点翻译成 TensorRT 网络里对应的层。** C++ plugin 只解决了“TRT 能执行这个计算”，
+converter 解决的是“PyTorch 图里的这个节点该变成哪个 TRT 层”。两样都要有，算子才能进 engine。
+
+```
+torch.export.export(model)
+   │  得到 FX 计算图，节点大致是：
+   │    linear → clamp → mylib.my_erfinv → linear
+   ▼
+Torch-TensorRT 逐个节点查“converter 注册表”
+   │    linear          → 有内置 converter → 加一个矩阵乘层
+   │    clamp           → 有内置 converter → 加一个逐元素层
+   │    mylib.my_erfinv → 查表 ……
+   ▼
+TensorRT 网络（INetworkDefinition）→ 构建出 engine
+```
+
+PyTorch 自带的几千个 aten 算子，Torch-TensorRT 已经内置了 converter（比如 `aten.linear` 会被
+翻译成 TRT 的矩阵乘层）。但 `mylib::my_erfinv` 是你自己定义的，Torch-TensorRT 不认识，
+查不到 converter，于是：
+
+- **R4 正常编译（`tt.dynamo.compile`）**：把这个节点切出去留在 PyTorch 执行，也就是
+  fallback（做法 A）；
+- **导出 `.plan`**：直接失败，因为 engine 里没地方放 PyTorch 代码。
+
+#### 写法
+
+加载第 10 章那个 C++ `IPluginV3` 的 `.so`，再给 **你的算子** 注册一个 converter。
+对应 `code/exp_r4_custom_op.py` 里 `register_cpp_converter` 中的这段：
 
 ```python
 import ctypes, tensorrt as trt
@@ -202,19 +231,50 @@ from torch_tensorrt.dynamo.conversion.converter_utils import get_trt_tensor
 
 ctypes.CDLL("artifacts/liberfinv_plugin.so")    # 加载即注册（REGISTER_TENSORRT_PLUGIN）
 
-@dynamo_tensorrt_converter(torch.ops.mylib.my_erfinv.default, supports_dynamic_shapes=True)
+@dynamo_tensorrt_converter(torch.ops.mylib.my_erfinv.default,   # ① 负责翻译哪个算子
+                           supports_dynamic_shapes=True)
 def my_erfinv_converter(ctx, target, args, kwargs, name):
+    # ② 从 TRT 插件注册表里找到 C++ plugin（.so 加载时注册的 "ErfInv"），创建一个实例
     creator = trt.get_plugin_registry().get_creator("ErfInv", "1", "")
     plugin = creator.create_plugin("ErfInv", trt.PluginFieldCollection([]),
                                    trt.TensorRTPhase.BUILD)
+    # ③ 把这个节点的输入（上一层的输出）取成 TRT 张量
     x = get_trt_tensor(ctx, args[0], f"{name}_x")
+    # ④ 在 TRT 网络里加一个插件层
     layer = ctx.net.add_plugin_v3([x], [], plugin)
+    layer.name = name
+    # ⑤ 返回这一层的输出，下一个节点（fc2）会接在它后面
     return layer.get_output(0)
 
 gm, meta = routes.build_dynamo_trt(model, inputs)   # 照常调用
 ```
 
-几个要对齐的地方：
+- **装饰器**把这个函数登记到注册表里：以后遇到 `mylib.my_erfinv` 节点就调用它；
+- **`ctx.net`** 是正在搭建的 TRT 网络，converter 往里面加层；
+- **`args`** 是这个节点在 PyTorch 图里的输入；
+- converter **只在构建 engine 时运行一次**。推理时不会调用它，执行的是它加进去的那个插件层。
+
+#### plugin 和 converter 的分工
+
+| | C++ plugin（`.so`） | converter（Python 函数） |
+|---|---|---|
+| 是什么 | TRT 的一种“自定义层”，里面是 CUDA kernel | 一个翻译规则：PyTorch 节点 → TRT 层 |
+| 谁会用到它 | TensorRT | Torch-TensorRT |
+| 什么时候运行 | 构建时推导形状；**推理时执行计算** | **只在构建时**运行 |
+| 部署时还需要吗 | 需要（先加载 `.so`，再加载 `.plan`） | 不需要（`.plan` 里已经是 TRT 层了） |
+
+打个比方：plugin 是“TRT 学会了一个新动作”，converter 是“告诉翻译官：PyTorch 里写
+`my_erfinv` 的地方，就用这个新动作”。
+
+和其他路线对照：
+
+- **ONNX 路线**里没有 converter 这一层。ONNX 节点的 `op_type` 直接和插件名对应，由 TRT 的
+  ONNX 解析器去插件注册表里查。所以同一个 `.so` 两条路线都能用，R4 只是多写了约 10 行 converter。
+- **做法 C（auto_qdp）** 那一行 `plugins.custom_op(...)` 同时生成了 plugin 和 converter；
+  **做法 D（手写 QDP AOT）** 的 converter 也要自己写，就是那行
+  `ctx.net.add_plugin(trtp.op.<ns>.<name>(x), aot=True)`。
+
+#### 要对齐的地方
 
 - converter 的目标是 `torch.ops.<命名空间>.<算子名>.default`，即 `torch.export` 图里
   节点的 target。
@@ -355,7 +415,8 @@ bert_tiny / ts_trt (unsupported):
     the same device, but got mat1 is on cuda:0, different from other tensors on cpu
 ```
 
-而在完整 benchmark 里（略有不同的调用序列）它走得更远，构建通过了，然后：
+而在完整 benchmark 里（略有不同的调用序列），以及第 5 章修订后重跑的
+`exp_unsupported_op.py` 里，它走得更远，构建通过了，然后：
 
 ```
 customop / ts_trt (runtime_error):
@@ -416,12 +477,99 @@ except Exception as e:
 缺点：
 
 - **依赖链最长**：torch ↔ torch-tensorrt ↔ tensorrt 三方版本要对齐（第 1 章那三个坑）。
-- **没有可检查的中间产物**：ONNX 路线那个能用 Netron 打开的文件，这里没有。
-  排查手段只有 `min_block_size` 调整和子图计数。
+- **不好排查**：编译过程中间缺少能拿出来单独检查的产物，结果不对、太慢或构建失败时，
+  很难定位问题出在哪一步。具体见下面的“R4 为什么不好排查”。
 - **默认产物离不开 Python**：要脱离 Python 得另外用
-  `convert_method_to_trt_engine` 或导出 `.ep`。
+  `convert_exported_program_to_serialized_trt_engine` 导出 `.plan`（要求整图无回退，见 4.5），
+  或导出 `.ep`。
 - **部分回退可能比 eager 慢**（`customop` 的 0.34x）。**能跑不等于该用。**
-- **性能上并不比 ONNX 路线更快**（实测 5% 以内）。
+- **性能上并不比 ONNX 路线更快**（静态 shape 下实测差距在 5% 以内）。
+
+### R4 为什么不好排查
+
+ONNX 路线中间有一个 ONNX 文件，正好把流程切成两半，可以分别验证：
+
+```
+PyTorch ──export──▶ model.onnx ──TRT build──▶ engine
+                       │
+                       └─ 用 onnxruntime 跑一下：结果对，说明是 TRT 这一步的问题；不对，说明是导出的问题
+                          polygraphy run model.onnx --onnxrt --trt --mark-all：逐层对比，直接找出从哪一层开始偏了
+```
+
+R4 只有一次调用 `tt.dynamo.compile(ep)`，里面依次做了图改写（算子分解）、划分子图、
+converter 翻译、构建 engine，中间结果都只存在内存里。具体有这几处不好查：
+
+1. **结果不对时，很难判断是哪一步出的错。** 导出这一步还能单独验证（直接运行
+   `ep.module()`，和 eager 对比结果），但后面几步没有现成的中间文件可以单独拿出来跑，
+   也没法像 polygraphy 那样做逐层对比。
+2. **看不到 TRT 实际拿到的是什么图。** ONNX 文件用 Netron 打开就是一张图，每个节点的
+   shape、dtype、常量都看得到。`ep.graph` 只能打印成文本，而且编译过程中图还会被 lowering
+   改写（比如一个算子被拆成好几个 aten 算子），默认看不到最终交给 converter 的那张图。
+3. **构建失败时，报错信息离真正原因很远。** 4.5 节手写 QDP AOT 时，最后抛出的是
+   `AssertionError` / `UnboundLocalError: cannot access local variable 'interpreter_result'`，
+   真正的原因 `CompilationError ... 'List' object has no attribute 'func'`（Triton kernel
+   里不能用列表循环）夹在前面的日志里，要专门 grep 才找得到。导出 `.plan` 时遇到不支持的
+   算子，也是报这个 `UnboundLocalError`。
+4. **没法直接动手改图。** ONNX 可以用 onnx-graphsurgeon 删节点、换节点、改常量，然后重新
+   构建，不用碰模型代码。R4 要改的话，只能改 Python 模型本身，或者自己写一个 lowering pass。
+5. **不好在别的环境复现、也不好交给别人复现。** 一个 `.onnx` 文件加一条 `trtexec` 命令，
+   就能在任何装了 TensorRT 的机器上复现问题，也能直接发到 NVIDIA 论坛。R4 的问题要复现，
+   需要整套 Python 环境，而且三方版本都得一致。
+
+R4 能用的排查手段：
+
+| 手段 | 能查什么 | 状态 |
+|---|---|---|
+| `trt_subgraphs` / `fallback_subgraphs` 计数 | 哪些算子进了 TRT，有没有发生回退 | 本教程一直在用 |
+| 运行 `ep.module()` 和 eager 对比 | 导出这一步本身对不对 | 原理上可行 |
+| `dryrun=True`（`compile` 的参数） | 只做到划分子图为止，不真正构建 engine，输出划分报告：每个算子分到了 TRT 还是 PyTorch | 2.9 源码里有，**未实测** |
+| `torch_tensorrt.dynamo.Debugger(...)` | `capture_fx_graph_before/after` 在指定 lowering pass 前后保存 FX 图；`save_layer_info` / `save_engine_profile` 保存 engine 的层信息和每层耗时 | 2.9 源码里有，**未实测** |
+| 导出 `.plan` 后用 `trtexec --loadEngine --dumpProfile` | engine 里每一层的耗时 | 前提是整张图都没有回退 |
+
+R4 反而更好查的地方：
+
+- **导出失败的报错更直接**：`torch.export` 报的 `GuardOnDataDependentSymNode` 会带上
+  Python 源码的行号，指出是哪一句造成的。ONNX 的 trace 导出遇到同样的问题根本不报错，
+  而是悄悄算错（第 5 章），那就更难查了。
+- **出问题的部分可以先回退**：不至于整条路线都跑不起来，先能跑，再慢慢查。
+
+所以更准确的说法是：**R4 的问题在于“编译过程中间缺少能拿出来单独检查的产物”，导出这一步
+它反而更容易查。**
+
+### R4 vs ONNX → engine（R2 / R3）
+
+两条路线最后都是由 TensorRT 选 kernel、做优化，所以**能跑通的静态 shape 模型上，速度
+几乎一样**。真正的差别在于：遇到不支持的算子、动态 shape、控制流时各自怎么处理，以及最后
+能拿到什么样的部署产物。数字都来自本教程各章在 Thor 上的实测。
+
+| 方面 | R4（torch.export → Torch-TensorRT） | ONNX → engine（R2 Python API / R3 trtexec） |
+|---|---|---|
+| 静态 shape 延迟 | resnet18 0.807 ms，bert_tiny 0.296 ms | 0.852 / 0.826 ms，0.413 / 0.287 ms，**差距在 5% 以内**（4.3） |
+| 动态 shape | **快 20–29%**，只需配置 `torch.export.Dim` 一处（第 9 章） | 要配 `dynamic_axes` 和 profile 两处，漏配一处会悄悄变成静态 shape |
+| 不支持的算子 | **自动回退到 PyTorch，不用额外开发就能跑**，但可能比 eager 还慢（customop 0.34x） | 默认构建失败，要写自定义算子 / 分解成标准算子 / plugin（第 10 章） |
+| 数据相关控制流 | **直接报错拒绝**，不会悄悄算错（第 5 章） | **会悄悄算错**：没被 trace 到的分支 cos 只有 0.386（第 5 章） |
+| 中间产物 | 没有可以单独检查的文件 | **ONNX 文件**，可以用 Netron 看图、用 polygraphy 单独跑、用 graphsurgeon 改 |
+| 默认产物 | GraphModule，**离不开 Python**（整图无回退时可另外导出 `.plan`） | **`.plan`，C++ / Triton Server / DeepStream 可以直接加载** |
+| 运行时代码 | 不用写，返回的就是 torch Module | 要自己写约 40 行 `TrtRunner` |
+| 依赖 | torch ↔ torch-tensorrt ↔ tensorrt 三个包的版本都要对齐，依赖链最长 | 只需要 tensorrt（加上导出用的 torch） |
+| IR 转换 | 一次，PyTorch 语义直接保留 | 两次，多一个 opset 版本的约束 |
+| 生态 | 较新，坑和资料都少一些 | 最成熟，绝大多数坑都有人踩过 |
+| 跨框架 | 只支持 PyTorch | TF / JAX 导出的 ONNX 也能用同一套 |
+
+ONNX 路线还有一个 R4 做不到的优势：可以**在导出时把 erfinv 分解成标准算子**，TRT 会把
+它们和前面的 `clamp` 融合成一个 kernel，比 C++ plugin 还快 11%（第 10 章）。plugin 是一道
+融合屏障，TRT 不会把它和相邻的层合并，R4 用 plugin 时也一样。
+
+怎么选（和第 6 章选型表一致）：
+
+- **CNN / Transformer，静态 shape，要部署成 `.plan`** → ONNX 路线（trtexec / onnx_trt），
+  最成熟，产物也最干净。
+- **动态 shape** → 值得试 R4。
+- **有 TRT 不支持的算子** → 先用 R4 的部分回退跑通，看子图计数和 profile；确认这个算子是
+  瓶颈后，先试能不能在 ONNX 导出时分解成标准算子，不行再写 C++ plugin。同一个 `.so`
+  两条路线都能用。
+- **模型里有数据相关控制流** → 用 `torch.export` 当检查工具：它导不出来，就说明 ONNX
+  路线也会悄悄算错。
 
 ## 4.8 动手
 
