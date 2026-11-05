@@ -209,6 +209,7 @@ resnet18 上 `torch_compile` 冷启动构建 41.2s 换来 2.16x，
 ```
 模型 eager 延迟 < 0.5ms？
   └─ 是 → 停。优化 batching 和数据流，不是 kernel。（规律 1）
+            （模型太小时，瓶颈不在 GPU 计算，而在计算之外的开销。优化 batching：把多个请求合成一批一起算，小batch喂不饱gpu，让固定开销分摊到更多样本上。 优化数据流：减少数据在 CPU 和 GPU 之间的搬运与等待，预分配显存，减少同步.item()、.cpu()，用 pinned memory 加 non_blocking=True，让拷贝和计算重叠，用 CUDA graph ，串行处理请求，用多个 stream 或流水线，让第 N 个请求的计算和第 N+1 个请求的拷贝、预处理重叠）
   └─ 否 ↓
 
 torch.export.export(model, inputs) 能过吗？
