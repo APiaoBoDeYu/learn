@@ -1,0 +1,9 @@
+# 原样复刻 infra-bin / model-bin 的 ARG 写法：ARG BAZEL_BIN 在 FROM 之前
+ARG BASE_IMAGE=busybox
+ARG BAZEL_BIN
+
+FROM ${BASE_IMAGE}
+RUN echo "inside stage: BASE_IMAGE='${BASE_IMAGE}' BAZEL_BIN='${BAZEL_BIN}'"
+WORKDIR /infra-service
+COPY ${BAZEL_BIN} bazel-bin
+RUN find /infra-service -type f | sort

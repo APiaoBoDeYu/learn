@@ -1,0 +1,9 @@
+ARG BASE=python:3.11-slim
+FROM ${BASE}
+WORKDIR /app
+# ✓ 先只拷依赖清单（很少变）
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+# ✓ 再拷源码（经常变）
+COPY . .
+CMD ["python", "main.py"]

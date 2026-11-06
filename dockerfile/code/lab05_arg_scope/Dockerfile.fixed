@@ -1,0 +1,8 @@
+# 修复写法：FROM 之后重新声明
+ARG BASE_IMAGE=busybox
+FROM ${BASE_IMAGE}
+ARG BAZEL_BIN
+RUN echo "inside stage: BAZEL_BIN='${BAZEL_BIN}'"
+WORKDIR /infra-service
+COPY ${BAZEL_BIN} bazel-bin
+RUN find /infra-service -type f | sort

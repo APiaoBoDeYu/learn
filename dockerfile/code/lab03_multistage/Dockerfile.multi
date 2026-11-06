@@ -1,0 +1,28 @@
+# 多阶段：仿照 local_clipping/Dockerfile 的 base / dev / production 结构
+ARG BASE=debian:bookworm-slim
+
+# ---------- 公共构建环境 ----------
+FROM ${BASE} AS builder
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc libc6-dev && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY hello.c .
+RUN mkdir -p /out && gcc -O2 -static -o /out/hello hello.c
+
+# ---------- 开发镜像：在 builder 基础上加调试工具，源码运行时挂载 ----------
+FROM builder AS dev
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gdb make && \
+    rm -rf /var/lib/apt/lists/*
+CMD ["bash"]
+
+# ---------- 生产镜像 1：slim 基础镜像 + 产物 ----------
+FROM ${BASE} AS runtime-slim
+COPY --from=builder /out/hello /usr/local/bin/hello
+CMD ["hello"]
+
+# ---------- 生产镜像 2：空镜像 + 静态链接产物（最后一个阶段 = 默认目标） ----------
+FROM scratch AS runtime-scratch
+COPY --from=builder /out/hello /hello
+ENTRYPOINT ["/hello"]

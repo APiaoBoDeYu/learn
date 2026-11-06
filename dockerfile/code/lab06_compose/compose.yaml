@@ -1,0 +1,88 @@
+# lab06：仿照 universal-uploader/assert/docker-compose.yaml 的结构
+name: lab06
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER_FILE: /run/secrets/pg_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+      POSTGRES_DB: postgres
+      PGPORT: 6432                       # 容器内也监听 6432（同 uploader 的 db）
+    secrets: [pg_user, pg_password]
+    ports:
+      - "127.0.0.1:6432:6432"            # 只绑本机，不对局域网开放
+    volumes:
+      - pgdata:/var/lib/postgresql/data  # ⚠ 故意用命名卷，用来演示 down -v 的后果
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 6432"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # 正确写法：等 db 健康后再启动
+  app:
+    image: postgres:16                   # 借用 postgres 镜像里的 psql 当"应用"，免去自己 build
+    init: true
+    # postgres 镜像自带 STOPSIGNAL SIGINT（会被继承）。bash 对 SIGINT 有特殊处理：等前台子进程
+    # 也因 SIGINT 退出才会退出，而 tini 只把信号发给 bash，于是 stop 要等满 10 秒。改回 SIGTERM。
+    stop_signal: SIGTERM
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    secrets: [pg_user, pg_password]
+    environment:
+      - BUCKET_BAD="${BUCKET_PREFIX:-demo}-internal-data-us"    # ⚠ 同 uploader 的写法：引号会成为值的一部分
+      - BUCKET_GOOD=${BUCKET_PREFIX:-demo}-internal-data-us
+    command:
+      - bash
+      - -c
+      - |
+        export PGUSER=$$(cat /run/secrets/pg_user)
+        export PGPASSWORD=$$(cat /run/secrets/pg_password)
+        echo "BUCKET_BAD=[$$BUCKET_BAD]"
+        echo "BUCKET_GOOD=[$$BUCKET_GOOD]"
+        psql -h db -p 6432 -d postgres -qc "CREATE TABLE IF NOT EXISTS beats(t timestamptz DEFAULT now())"
+        while true; do
+          psql -h db -p 6432 -d postgres -qAt -c "INSERT INTO beats DEFAULT VALUES; SELECT 'rows=' || count(*) FROM beats"
+          sleep 5
+        done
+
+  # 反例：只有 depends_on 列表，没有健康检查，也没有 restart
+  app_naive:
+    profiles: [naive]
+    image: postgres:16
+    depends_on: [db]
+    secrets: [pg_user, pg_password]
+    command:
+      - bash
+      - -c
+      - |
+        export PGUSER=$$(cat /run/secrets/pg_user) PGPASSWORD=$$(cat /run/secrets/pg_password)
+        psql -h db -p 6432 -d postgres -c "SELECT 'connected at ' || now()"
+
+  # 仿照 universal_uploader：host 网络 + 通过宿主机端口映射访问 db
+  app_hostnet:
+    profiles: [hostnet]
+    image: postgres:16
+    network_mode: host
+    depends_on:
+      db:
+        condition: service_healthy
+    secrets: [pg_user, pg_password]
+    command:
+      - bash
+      - -c
+      - |
+        export PGUSER=$$(cat /run/secrets/pg_user) PGPASSWORD=$$(cat /run/secrets/pg_password)
+        psql -h localhost -p 6432 -d postgres -c "SELECT 'via host network: ' || inet_server_addr()"
+
+secrets:
+  pg_user:
+    file: ./secrets/pg_user
+  pg_password:
+    file: ./secrets/pg_password
+
+volumes:
+  pgdata:
