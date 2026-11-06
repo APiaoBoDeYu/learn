@@ -1,0 +1,12 @@
+# 基础环境：/opt/venv/bin/python（预装 torch 2.9.1 / tensorrt 10.14 / triton（v1.0.0 镜像 3.5，v1.3.0 镜像 3.8）/ onnx / pynvml / py-spy）
+# 以下为本教程额外安装的包（2026-11-05 旧容器；2026-11-06 新容器 v1.3.0_thor 重装，详见 plan/env_report.md）
+viztracer==1.1.1
+line_profiler==5.1.0
+snakeviz==2.2.2
+nvtx==0.2.17
+HolisticTraceAnalysis==0.5.0
+# HTA 会把 packaging 升级到 26.x，与环境中已有的 streamlit/mlflow 冲突，安装后需回滚：
+#   pip install "packaging<24" "pytest<9"
+# jtop 客户端（v1.3.0 镜像中没有）：必须与宿主机 jtop 服务版本一致（4.5.2），PyPI 上没有，从 GitHub 提交安装：
+#   git clone https://github.com/rbonghi/jetson_stats.git /tmp/jstats && git -C /tmp/jstats checkout 11140a0
+#   pip install /tmp/jstats
