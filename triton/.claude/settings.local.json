@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p /root/data/learn/.vscode)"
+    ],
+    "additionalDirectories": [
+      "/root/data/learn"
+    ]
+  }
+}
