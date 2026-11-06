@@ -1,0 +1,40 @@
+# ---- Python 缓存 / 构建产物 ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+*.so
+*.o
+
+# ---- 本地环境（conda/miniforge 等，体积巨大） ----
+vla/miniforge3/
+
+# ---- 运行输出 / 实验产物 ----
+outputs/
+*.log
+
+# ---- 模型、引擎、profiling 等大文件 ----
+*.onnx
+*.plan
+*.engine
+*.pt2
+*.pth
+*.ckpt
+*.safetensors
+*.nsys-rep
+*.ncu-rep
+*.qdrep
+*.sqlite
+
+# ---- 数据集 ----
+torch2trt/data/
+
+# ---- 系统文件 ----
+.DS_Store
