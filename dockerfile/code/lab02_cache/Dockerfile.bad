@@ -1,0 +1,7 @@
+ARG BASE=python:3.11-slim
+FROM ${BASE}
+WORKDIR /app
+# ✗ 先拷全部源码：任何一个文件改动都会让下面的 pip install 重跑
+COPY . .
+RUN pip install --no-cache-dir -r requirements.txt
+CMD ["python", "main.py"]

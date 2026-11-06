@@ -1,0 +1,10 @@
+# 单阶段：编译器、头文件、源码全部留在最终镜像里
+ARG BASE=debian:bookworm-slim
+FROM ${BASE}
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc libc6-dev && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY hello.c .
+RUN gcc -O2 -static -o /usr/local/bin/hello hello.c
+CMD ["hello"]

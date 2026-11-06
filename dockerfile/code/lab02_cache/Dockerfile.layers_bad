@@ -1,0 +1,5 @@
+ARG BASE=python:3.11-slim
+FROM ${BASE}
+# ✗ 下载和删除分在两个 RUN：100MB 永久留在第一层
+RUN head -c 100M /dev/urandom > /big.bin
+RUN rm /big.bin

@@ -1,0 +1,4 @@
+ARG BASE=python:3.11-slim
+FROM ${BASE}
+# ✓ 同一个 RUN 里生成、使用、删除
+RUN head -c 100M /dev/urandom > /big.bin && sha256sum /big.bin && rm /big.bin
