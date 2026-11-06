@@ -1,0 +1,18 @@
+{
+  "exported_on_machine": "aarch64",
+  "exported_on_platform": "Linux-6.8.12-tegra-aarch64-with-glibc2.39",
+  "torch_version": "2.9.1",
+  "input_shape": [
+    2,
+    3,
+    32,
+    32
+  ],
+  "input_dtype": "torch.float32",
+  "output_shape": [
+    2,
+    8
+  ],
+  "output_dtype": "torch.float32",
+  "seed": 20260710
+}
