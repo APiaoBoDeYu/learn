@@ -1,5 +1,7 @@
 # 05 构建上下文与 .dockerignore
 
+> 另见：[brain-service 篇第 2 章 2.1](../brain-service-docker-deploy/02_context_and_cache.md)
+
 ## 为什么需要 .dockerignore
 
 构建上下文目录里的文件都可能被发给构建引擎。原文件的上下文是整个仓库，里面有模型权重、数据集、日志、`.git`，动辄几十 GB。不过滤的话：
