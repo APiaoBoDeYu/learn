@@ -21,7 +21,7 @@
 | [01-CI-CD概念.md](01-CI-CD概念.md) | CI、持续交付、持续部署分别是什么，这个项目做到哪一步 |
 | [02-bamboo流水线.md](02-bamboo流水线.md) | `bamboo.yaml` 的结构和三个阶段，script 任务怎么执行，镜像构建脚本逐段讲解 |
 | [03-构建脚本.md](03-构建脚本.md) | `should_build.sh` 怎么决定构建什么，`build.sh` 怎么构建和推送 |
-| [04-docker-compose启动.md](04-docker-compose启动.md) | compose 文件逐项讲解，以及它和 Dockerfile 怎么配合 |
+| [04-docker-compose启动.md](04-docker-compose启动.md) | compose 是什么，逐项讲解（body 为什么只启动 bash、stdin_open/tty、ulimits、logging、bind 挂载），以及它和 Dockerfile 怎么配合 |
 | [05-端到端流程.md](05-端到端流程.md) | 把前面串起来：一次发版从头到尾发生了什么，附自测题 |
 
 ## 相关教程
