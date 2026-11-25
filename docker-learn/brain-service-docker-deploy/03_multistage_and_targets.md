@@ -1,5 +1,7 @@
 # 第 3 章：多阶段构建、`--target` 与 BuildKit 新语法
 
+> 另见：[VLA 篇 06 多阶段构建](../vla-dockerfile-release/06-多阶段构建.md)
+
 ## 3.1 问题：编译环境 ≠ 运行环境
 
 第 2 章看到，brain-service 生产镜像里装着 bazel、node、gcc、完整源码、构建缓存 ——

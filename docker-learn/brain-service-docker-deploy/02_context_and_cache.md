@@ -1,5 +1,7 @@
 # 第 2 章：构建上下文、层缓存与镜像体积
 
+> 另见：[VLA 篇 05 构建上下文与 dockerignore](../vla-dockerfile-release/05-构建上下文与dockerignore.md)、[08 缓存与层](../vla-dockerfile-release/08-缓存与层.md)
+
 写出"能用"的 Dockerfile 不难，写出"构建快、镜像小、不出怪问题"的 Dockerfile，靠的就是本章三件事。
 
 ## 2.1 构建上下文（build context）

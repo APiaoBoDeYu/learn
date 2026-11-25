@@ -1,5 +1,7 @@
 # 第 1 章：Dockerfile 指令逐条精讲
 
+> 另见：[VLA 篇 02 基础指令](../vla-dockerfile-release/02-基础指令.md)、[03 变量与元数据](../vla-dockerfile-release/03-变量与元数据.md)、[07 构建期检查](../vla-dockerfile-release/07-构建期检查.md)
+
 Dockerfile 一共不到 20 条指令，常用的只有 10 条。本章按"出现频率"排序，每条都用仓库里的真实代码讲。
 
 先把仓库里三个风格不同的 Dockerfile 摆出来，后文反复引用：

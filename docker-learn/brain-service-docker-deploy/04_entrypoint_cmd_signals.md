@@ -1,5 +1,7 @@
 # 第 4 章：ENTRYPOINT、CMD、PID 1 与信号
 
+> 另见：[VLA 篇 04 启动命令](../vla-dockerfile-release/04-启动命令.md)
+
 这一章的内容平时很少有人在意，直到某天 `docker stop` 一个服务要卡 10 秒、
 或者服务被强杀导致数据库文件损坏、机械臂没有正常停下……
 

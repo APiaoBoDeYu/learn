@@ -1,5 +1,7 @@
 # 第 0 章：心智模型 —— 你每天用的 `docker run` 背后是什么
 
+> 另见：[VLA 篇 01 基础概念](../vla-dockerfile-release/01-基础概念.md)
+
 你已经会 `docker pull` / `docker run` / `docker exec`。这一章把这些动作背后的几个对象讲清楚，
 后面所有章节都建立在这几个概念上。
 
